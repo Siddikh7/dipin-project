@@ -15,6 +15,7 @@ router = APIRouter()
 # Ticket APIs
 # ============================================================
 
+
 @router.get("/tickets", response_model=List[TicketResponse])
 async def list_tickets(
     tenant_id: str,
@@ -22,7 +23,7 @@ async def list_tickets(
     urgency: Optional[str] = None,
     source: Optional[str] = None,
     page: int = Query(1, ge=1),
-    page_size: int = Query(20, ge=1, le=100)
+    page_size: int = Query(20, ge=1, le=100),
 ):
     db = await get_db()
     query: dict = {}
@@ -65,6 +66,7 @@ async def get_ticket(ticket_id: str, tenant_id: str):
 # Health Check API (Task 5)
 # ============================================================
 
+
 @router.get("/health")
 async def health_check():
     """
@@ -84,12 +86,13 @@ async def health_check():
 # Analytics API (Task 3)
 # ============================================================
 
+
 @router.get("/tenants/{tenant_id}/stats", response_model=TenantStats)
 async def get_tenant_stats(
     tenant_id: str,
     from_date: Optional[datetime] = None,
     to_date: Optional[datetime] = None,
-    analytics_service: AnalyticsService = Depends()
+    analytics_service: AnalyticsService = Depends(),
 ):
     """
     Retrieve analytics and statistics for a given tenant.
@@ -105,11 +108,12 @@ async def get_tenant_stats(
 # Ingestion APIs (Task 1, 8, 9)
 # ============================================================
 
+
 @router.post("/ingest/run")
 async def run_ingestion(
     tenant_id: str,
     background_tasks: BackgroundTasks,
-    ingest_service: IngestService = Depends()
+    ingest_service: IngestService = Depends(),
 ):
     """
     Trigger a ticket ingestion run for a tenant.
@@ -133,8 +137,7 @@ async def run_ingestion(
 
 @router.get("/ingest/status")
 async def get_ingestion_status(
-    tenant_id: str,
-    ingest_service: IngestService = Depends()
+    tenant_id: str, ingest_service: IngestService = Depends()
 ):
     """
     Get the current ingestion status for the given tenant (Task 8).
@@ -149,8 +152,7 @@ async def get_ingestion_status(
 
 @router.get("/ingest/progress/{job_id}")
 async def get_ingestion_progress(
-    job_id: str,
-    ingest_service: IngestService = Depends()
+    job_id: str, ingest_service: IngestService = Depends()
 ):
     """
     Retrieve ingestion job progress by `job_id` (Task 9).
@@ -166,10 +168,7 @@ async def get_ingestion_progress(
 
 
 @router.delete("/ingest/{job_id}")
-async def cancel_ingestion(
-    job_id: str,
-    ingest_service: IngestService = Depends()
-):
+async def cancel_ingestion(job_id: str, ingest_service: IngestService = Depends()):
     """
     Cancel a running ingestion job (Task 9).
 
@@ -178,13 +177,16 @@ async def cancel_ingestion(
     """
     success = await ingest_service.cancel_job(job_id)
     if not success:
-        raise HTTPException(status_code=404, detail="Job not found or already completed")
+        raise HTTPException(
+            status_code=404, detail="Job not found or already completed"
+        )
     return {"status": "cancelled", "job_id": job_id}
 
 
 # ============================================================
 # Lock Status API (Task 8)
 # ============================================================
+
 
 @router.get("/ingest/lock/{tenant_id}")
 async def get_lock_status(tenant_id: str):
@@ -201,6 +203,7 @@ async def get_lock_status(tenant_id: str):
 # ============================================================
 # Circuit Breaker Status API (Task 11)
 # ============================================================
+
 
 @router.get("/circuit/{name}/status")
 async def get_circuit_status(name: str):
@@ -227,16 +230,16 @@ async def reset_circuit(name: str):
 # Ticket History API (Task 12)
 # ============================================================
 
+
 @router.get("/tickets/{ticket_id}/history")
 async def get_ticket_history(
-    ticket_id: str,
-    tenant_id: str,
-    limit: int = Query(50, ge=1, le=200)
+    ticket_id: str, tenant_id: str, limit: int = Query(50, ge=1, le=200)
 ):
     """
     Retrieve the change history for a ticket (Task 12).
     """
     from src.services.sync_service import SyncService
+
     sync_service = SyncService()
     history = await sync_service.get_ticket_history(ticket_id, tenant_id, limit)
     return {"ticket_id": ticket_id, "history": history}
