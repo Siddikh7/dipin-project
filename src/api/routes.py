@@ -124,7 +124,11 @@ async def run_ingestion(
     #     raise HTTPException(status_code=409, detail="Ingestion already running")
 
     result = await ingest_service.run_ingestion(tenant_id)
-    return {"status": "ingestion_started", "result": result}
+    return {
+        "status": "ingestion_started",
+        "new_tickets": result.get("new_ingested", 0),
+        "result": result,
+    }
 
 
 @router.get("/ingest/status")

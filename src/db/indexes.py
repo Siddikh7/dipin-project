@@ -11,7 +11,7 @@ async def create_indexes():
     db = await get_db()
     tickets = db.tickets
 
-     # 🐛 DEBUG TASK E: Inefficient indexes
+    # 🐛 DEBUG TASK E: Inefficient indexes
     # The indexes below are intentionally misaligned with real query
     # patterns and will cause performance issues.
     # ============================================================
@@ -27,16 +27,19 @@ async def create_indexes():
     # 🐛 Issue 3: Single-field index on urgency (also low cardinality)
     await tickets.create_index([("urgency", pymongo.ASCENDING)])
 
-     # 🐛 Issue 4: Wrong order in composite index
+    # 🐛 Issue 4: Wrong order in composite index
     # Queries typically filter by tenant_id and then sort by created_at,
     # but this index uses the reverse order.
-    await tickets.create_index([
-        ("created_at", pymongo.DESCENDING),
-        ("tenant_id", pymongo.ASCENDING)
-    ])
+    await tickets.create_index(
+        [("created_at", pymongo.DESCENDING), ("tenant_id", pymongo.ASCENDING)]
+    )
 
     # 🐛 Issue 5: Missing unique index for idempotency
     # The (tenant_id, external_id) pair should be unique to prevent duplicates.
+    await tickets.create_index(
+        [("tenant_id", pymongo.ASCENDING), ("external_id", pymongo.ASCENDING)],
+        unique=True,
+    )
 
     # ingestion_jobs 컬렉션 인덱스
     ingestion_jobs = db.ingestion_jobs
