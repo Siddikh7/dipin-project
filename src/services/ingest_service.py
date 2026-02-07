@@ -55,6 +55,8 @@ class IngestService:
         result = await db.ingestion_jobs.insert_one(job_doc)
         job_id = str(result.inserted_id)
 
+        logger.info("Ingestion started tenant=%s job_id=%s", tenant_id, job_id)
+
         # TODO: implement ingestion behaviour
         # - Handle pagination
         # - Guarantee idempotency (upsert)
@@ -204,6 +206,7 @@ class IngestService:
                     page = next_page
 
         except Exception as e:
+            logger.exception("Ingestion failed tenant=%s job_id=%s", tenant_id, job_id)
             # Always log failures
             await db.ingestion_logs.insert_one(
                 {
@@ -213,6 +216,7 @@ class IngestService:
                     "error": str(e),
                     "started_at": job_doc["started_at"],
                     "ended_at": datetime.utcnow(),
+                    "new_tickets": new_ingested,
                     "new_ingested": new_ingested,
                     "updated": updated,
                     "errors": errors,
@@ -233,10 +237,20 @@ class IngestService:
                 "status": "completed",
                 "started_at": job_doc["started_at"],
                 "ended_at": datetime.utcnow(),
+                "new_tickets": new_ingested,
                 "new_ingested": new_ingested,
                 "updated": updated,
                 "errors": errors,
             }
+        )
+
+        logger.info(
+            "Ingestion completed tenant=%s job_id=%s new=%s updated=%s errors=%s",
+            tenant_id,
+            job_id,
+            new_ingested,
+            updated,
+            errors,
         )
 
         return {
