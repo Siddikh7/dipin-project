@@ -6,19 +6,19 @@ class ClassifyService:
         You are encouraged to review and refine the rules to make them more
         realistic and internally consistent.
         """
-        text = message  # subject is currently ignored
+        text = f"{subject} {message}".lower()
 
         urgency = "low"
-        if "refund" in text:
-            urgency = "medium"
-        if "lawsuit" in text:
+        if any(keyword in text for keyword in ("lawsuit", "gdpr", "urgent")):
+            urgency = "high"
+        elif any(keyword in text for keyword in ("refund", "broken")):
             urgency = "medium"
 
         sentiment = "neutral"
-        if "angry" in text or "broken" in text:
+        if any(keyword in text for keyword in ("angry", "broken")):
             sentiment = "negative"
 
-        requires_action = False
+        requires_action = urgency in ("high", "medium") or sentiment == "negative"
 
         return {
             "urgency": urgency,
