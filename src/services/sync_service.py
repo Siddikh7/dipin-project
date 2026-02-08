@@ -9,7 +9,7 @@ Requirements:
 3. Record change history in the `ticket_history` collection.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
 from src.db.mongo import get_db
 
@@ -45,14 +45,22 @@ class SyncService:
 
         def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
             if isinstance(value, datetime):
-                return value
+                if value.tzinfo is None:
+                    return value.replace(tzinfo=timezone.utc)
+                return value.astimezone(timezone.utc)
             if isinstance(value, str):
                 normalized = value.replace("Z", "+00:00")
                 try:
-                    return datetime.fromisoformat(normalized)
+                    parsed = datetime.fromisoformat(normalized)
+                    if parsed.tzinfo is None:
+                        return parsed.replace(tzinfo=timezone.utc)
+                    return parsed.astimezone(timezone.utc)
                 except ValueError:
                     return None
             return None
+
+        def _now_utc() -> datetime:
+            return datetime.now(timezone.utc)
 
         external_id = external_ticket.get("id") or external_ticket.get("external_id")
         updated_at = _parse_datetime(external_ticket.get("updated_at"))
@@ -69,25 +77,32 @@ class SyncService:
                 "subject": external_ticket.get("subject"),
                 "message": external_ticket.get("message"),
                 "status": external_ticket.get("status"),
-                "created_at": created_at or datetime.utcnow(),
-                "updated_at": updated_at or created_at or datetime.utcnow(),
+                "created_at": created_at or _now_utc(),
+                "updated_at": updated_at or created_at or _now_utc(),
             }
             await db.tickets.insert_one(doc)
             await self.record_history(external_id, tenant_id, "created")
             return {"action": "created", "ticket_id": external_id, "changes": []}
 
-        existing_updated_at = existing.get("updated_at")
-        if updated_at and existing_updated_at and updated_at <= existing_updated_at:
-            return {"action": "unchanged", "ticket_id": external_id, "changes": []}
+        existing_updated_at = _parse_datetime(existing.get("updated_at"))
+        if updated_at and existing_updated_at:
+            if updated_at.timestamp() <= existing_updated_at.timestamp():
+                return {"action": "unchanged", "ticket_id": external_id, "changes": []}
 
         update_doc = {
             "subject": external_ticket.get("subject", existing.get("subject")),
             "message": external_ticket.get("message", existing.get("message")),
             "status": external_ticket.get("status", existing.get("status")),
-            "updated_at": updated_at or datetime.utcnow(),
+            "updated_at": updated_at or _now_utc(),
         }
 
-        changes = self.compute_changes(existing, update_doc, list(update_doc.keys()))
+        existing_for_compare = dict(existing)
+        existing_for_compare["updated_at"] = existing_updated_at
+        update_doc["updated_at"] = _parse_datetime(update_doc["updated_at"])
+
+        changes = self.compute_changes(
+            existing_for_compare, update_doc, list(update_doc.keys())
+        )
         if not changes:
             return {"action": "unchanged", "ticket_id": external_id, "changes": []}
 
@@ -122,7 +137,7 @@ class SyncService:
             return 0
 
         db = await get_db()
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         cursor = db.tickets.find(
             {
@@ -202,7 +217,7 @@ class SyncService:
             "tenant_id": tenant_id,
             "action": action,
             "changes": changes or {},
-            "recorded_at": datetime.utcnow(),
+            "recorded_at": datetime.now(timezone.utc),
         }
 
         result = await db[self.HISTORY_COLLECTION].insert_one(history_doc)
