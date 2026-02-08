@@ -87,9 +87,22 @@ class IngestService:
             total_pages = None
             max_tickets = 100
             processed_tickets = 0
+            cancelled = False
 
             async with httpx.AsyncClient(timeout=10.0) as client:
                 while True:
+                    job_state = await db.ingestion_jobs.find_one(
+                        {"_id": result.inserted_id}, {"status": 1}
+                    )
+                    if job_state and job_state.get("status") == "cancelled":
+                        cancelled = True
+                        logger.info(
+                            "Ingestion cancelled tenant=%s job_id=%s",
+                            tenant_id,
+                            job_id,
+                        )
+                        break
+
                     params = {"page": page, "page_size": page_size}
 
                     while True:
@@ -207,13 +220,25 @@ class IngestService:
 
         except Exception as e:
             logger.exception("Ingestion failed tenant=%s job_id=%s", tenant_id, job_id)
-            # Always log failures
             await db.ingestion_logs.insert_one(
                 {
                     "tenant_id": tenant_id,
                     "job_id": job_id,
-                    "status": "failed",
+                    "status": "FAILED",
                     "error": str(e),
+                    "start_time": job_doc["started_at"],
+                    "end_time": datetime.utcnow(),
+                    "tickets_processed": new_ingested + updated + errors,
+                }
+            )
+            raise
+
+        if cancelled:
+            await db.ingestion_logs.insert_one(
+                {
+                    "tenant_id": tenant_id,
+                    "job_id": job_id,
+                    "status": "cancelled",
                     "started_at": job_doc["started_at"],
                     "ended_at": datetime.utcnow(),
                     "new_tickets": new_ingested,
@@ -222,25 +247,27 @@ class IngestService:
                     "errors": errors,
                 }
             )
-            raise
+            return {
+                "status": "cancelled",
+                "job_id": job_id,
+                "new_ingested": new_ingested,
+                "updated": updated,
+                "errors": errors,
+            }
 
         # Log successful completion
         await db.ingestion_jobs.update_one(
             {"_id": result.inserted_id},
             {"$set": {"status": "completed", "ended_at": datetime.utcnow()}},
         )
-
         await db.ingestion_logs.insert_one(
             {
                 "tenant_id": tenant_id,
                 "job_id": job_id,
-                "status": "completed",
-                "started_at": job_doc["started_at"],
-                "ended_at": datetime.utcnow(),
-                "new_tickets": new_ingested,
-                "new_ingested": new_ingested,
-                "updated": updated,
-                "errors": errors,
+                "status": "SUCCESS",
+                "start_time": job_doc["started_at"],
+                "end_time": datetime.utcnow(),
+                "tickets_processed": new_ingested + updated + errors,
             }
         )
 

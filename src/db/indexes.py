@@ -16,10 +16,6 @@ async def create_indexes():
     # patterns and will cause performance issues.
     # ============================================================
 
-    # 🐛 Issue 1: Index on created_at without tenant_id
-    # Most queries filter by tenant_id, so this index is rarely used.
-    await tickets.create_index([("created_at", pymongo.ASCENDING)])
-
     # 🐛 Issue 2: Single-field index on a low-cardinality field
     # status has only three values (open/closed/pending), so selectivity is low.
     await tickets.create_index([("status", pymongo.ASCENDING)])
@@ -39,6 +35,12 @@ async def create_indexes():
     await tickets.create_index(
         [("tenant_id", pymongo.ASCENDING), ("external_id", pymongo.ASCENDING)],
         unique=True,
+    )
+
+    # TTL index for automatic cleanup of old data.
+    await tickets.create_index(
+        [("created_at", pymongo.ASCENDING)],
+        expireAfterSeconds=60 * 60 * 24 * 90,
     )
 
     # ingestion_jobs 컬렉션 인덱스

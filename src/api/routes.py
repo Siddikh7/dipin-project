@@ -130,8 +130,10 @@ async def run_ingestion(
     result = await ingest_service.run_ingestion(tenant_id)
     return {
         "status": "ingestion_started",
+        "job_id": result.get("job_id"),
         "new_tickets": result.get("new_ingested", 0),
-        "result": result,
+        "updated": result.get("updated", 0),
+        "errors": result.get("errors", 0),
     }
 
 
