@@ -2,6 +2,7 @@ from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
 
+
 class TicketBase(BaseModel):
     external_id: str = Field(..., alias="id")
     tenant_id: str
@@ -12,17 +13,21 @@ class TicketBase(BaseModel):
     created_at: datetime
     status: str
 
+
 class TicketInDB(TicketBase):
     id: Optional[str] = Field(None, alias="_id")
     urgency: str
     sentiment: str
     requires_action: bool
 
+
 class TicketResponse(TicketInDB):
     pass
 
+
 class TicketHistory(BaseModel):
     """Ticket change history model (Task 12)."""
+
     ticket_id: str
     tenant_id: str
     action: str  # created, updated, deleted

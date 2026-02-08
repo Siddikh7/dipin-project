@@ -9,6 +9,9 @@ from src.services.rate_limiter import get_rate_limiter
 from src.core.logging import logger
 
 
+_ingestion_cache = {}
+
+
 class IngestService:
     def __init__(self):
         self.external_api_url = "http://mock-external-api:9000/external/support-tickets"

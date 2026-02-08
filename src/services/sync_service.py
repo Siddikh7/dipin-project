@@ -41,11 +41,66 @@ class SyncService:
         - Compare updated_at to decide whether an update is needed.
         - If changed, update the ticket and record history.
         """
-        # TODO: implement
+        db = await get_db()
+
+        def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
+            if isinstance(value, datetime):
+                return value
+            if isinstance(value, str):
+                normalized = value.replace("Z", "+00:00")
+                try:
+                    return datetime.fromisoformat(normalized)
+                except ValueError:
+                    return None
+            return None
+
+        external_id = external_ticket.get("id") or external_ticket.get("external_id")
+        updated_at = _parse_datetime(external_ticket.get("updated_at"))
+        created_at = _parse_datetime(external_ticket.get("created_at"))
+
+        existing = await db.tickets.find_one(
+            {"tenant_id": tenant_id, "external_id": external_id}
+        )
+
+        if not existing:
+            doc = {
+                "external_id": external_id,
+                "tenant_id": tenant_id,
+                "subject": external_ticket.get("subject"),
+                "message": external_ticket.get("message"),
+                "status": external_ticket.get("status"),
+                "created_at": created_at or datetime.utcnow(),
+                "updated_at": updated_at or created_at or datetime.utcnow(),
+            }
+            await db.tickets.insert_one(doc)
+            await self.record_history(external_id, tenant_id, "created")
+            return {"action": "created", "ticket_id": external_id, "changes": []}
+
+        existing_updated_at = existing.get("updated_at")
+        if updated_at and existing_updated_at and updated_at <= existing_updated_at:
+            return {"action": "unchanged", "ticket_id": external_id, "changes": []}
+
+        update_doc = {
+            "subject": external_ticket.get("subject", existing.get("subject")),
+            "message": external_ticket.get("message", existing.get("message")),
+            "status": external_ticket.get("status", existing.get("status")),
+            "updated_at": updated_at or datetime.utcnow(),
+        }
+
+        changes = self.compute_changes(existing, update_doc, list(update_doc.keys()))
+        if not changes:
+            return {"action": "unchanged", "ticket_id": external_id, "changes": []}
+
+        await db.tickets.update_one(
+            {"tenant_id": tenant_id, "external_id": external_id},
+            {"$set": update_doc},
+        )
+        await self.record_history(external_id, tenant_id, "updated", changes)
+
         return {
-            "action": "unchanged",
-            "ticket_id": external_ticket.get("id"),
-            "changes": []
+            "action": "updated",
+            "ticket_id": external_id,
+            "changes": list(changes.keys()),
         }
 
     async def mark_deleted(self, tenant_id: str, external_ids: List[str]) -> int:
@@ -63,10 +118,41 @@ class SyncService:
         - Set the `deleted_at` field.
         - Record a history entry.
         """
-        # TODO: implement
-        return 0
+        if not external_ids:
+            return 0
 
-    async def detect_deleted_tickets(self, tenant_id: str, external_ids: List[str]) -> List[str]:
+        db = await get_db()
+        now = datetime.utcnow()
+
+        cursor = db.tickets.find(
+            {
+                "tenant_id": tenant_id,
+                "external_id": {"$in": external_ids},
+                "deleted_at": {"$exists": False},
+            }
+        )
+        docs = await cursor.to_list(length=len(external_ids))
+
+        if not docs:
+            return 0
+
+        await db.tickets.update_many(
+            {
+                "tenant_id": tenant_id,
+                "external_id": {"$in": external_ids},
+                "deleted_at": {"$exists": False},
+            },
+            {"$set": {"deleted_at": now}},
+        )
+
+        for doc in docs:
+            await self.record_history(doc.get("external_id"), tenant_id, "deleted")
+
+        return len(docs)
+
+    async def detect_deleted_tickets(
+        self, tenant_id: str, external_ids: List[str]
+    ) -> List[str]:
         """
         Detect tickets that appear to have been deleted externally.
 
@@ -81,15 +167,21 @@ class SyncService:
 
         TODO: Implement this query.
         """
-        # TODO: implement
-        return []
+        db = await get_db()
+        query = {"tenant_id": tenant_id}
+        if external_ids:
+            query["external_id"] = {"$nin": external_ids}
+
+        cursor = db.tickets.find(query, {"external_id": 1})
+        docs = await cursor.to_list(length=10000)
+        return [doc.get("external_id") for doc in docs if doc.get("external_id")]
 
     async def record_history(
         self,
         ticket_id: str,
         tenant_id: str,
         action: str,
-        changes: Optional[Dict[str, Any]] = None
+        changes: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Record a change history entry.
@@ -110,17 +202,14 @@ class SyncService:
             "tenant_id": tenant_id,
             "action": action,
             "changes": changes or {},
-            "recorded_at": datetime.utcnow()
+            "recorded_at": datetime.utcnow(),
         }
 
         result = await db[self.HISTORY_COLLECTION].insert_one(history_doc)
         return str(result.inserted_id)
 
     async def get_ticket_history(
-        self,
-        ticket_id: str,
-        tenant_id: str,
-        limit: int = 50
+        self, ticket_id: str, tenant_id: str, limit: int = 50
     ) -> List[dict]:
         """
         Retrieve ticket change history.
@@ -135,13 +224,21 @@ class SyncService:
         """
         db = await get_db()
 
-        cursor = db[self.HISTORY_COLLECTION].find(
-            {"ticket_id": ticket_id, "tenant_id": tenant_id}
-        ).sort("recorded_at", -1).limit(limit)
+        cursor = (
+            db[self.HISTORY_COLLECTION]
+            .find({"ticket_id": ticket_id, "tenant_id": tenant_id})
+            .sort("recorded_at", -1)
+            .limit(limit)
+        )
+        history = await cursor.to_list(length=limit)
+        for item in history:
+            if "_id" in item:
+                item["_id"] = str(item["_id"])
+        return history
 
-        return await cursor.to_list(length=limit)
-
-    def compute_changes(self, old_doc: dict, new_doc: dict, fields: List[str]) -> Dict[str, Any]:
+    def compute_changes(
+        self, old_doc: dict, new_doc: dict, fields: List[str]
+    ) -> Dict[str, Any]:
         """
         Compute field-level differences between two documents.
 
@@ -164,9 +261,6 @@ class SyncService:
             new_value = new_doc.get(field)
 
             if old_value != new_value:
-                changes[field] = {
-                    "old": old_value,
-                    "new": new_value
-                }
+                changes[field] = {"old": old_value, "new": new_value}
 
         return changes
