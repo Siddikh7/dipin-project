@@ -1,4 +1,7 @@
-from fastapi import APIRouter, Depends, Query, HTTPException, BackgroundTasks
+import asyncio
+import httpx
+from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi.responses import JSONResponse
 from typing import List, Optional
 from datetime import datetime
 from src.db.models import TicketResponse, TenantStats
@@ -27,7 +30,7 @@ async def list_tickets(
     page_size: int = Query(20, ge=1, le=100),
 ):
     db = await get_db()
-    query: dict = {}
+    query: dict = {"tenant_id": tenant_id, "deleted_at": {"$exists": False}}
 
     # ============================================================
     # 🐛 DEBUG TASK A: Multi-tenant isolation bug
@@ -42,9 +45,6 @@ async def list_tickets(
         query["urgency"] = urgency
     if source:
         query["source"] = source
-
-    # 🐛 TODO: Add tenant_id scoping to the query.
-    # 🐛 TODO: Filter out tickets with a non-null deleted_at (soft delete).
 
     cursor = db.tickets.find(query).skip((page - 1) * page_size).limit(page_size)
     docs = await cursor.to_list(length=page_size)
@@ -78,9 +78,37 @@ async def health_check():
     - Check external API/service connectivity.
     - Return a non-200 status code if any dependency is unhealthy.
     """
-    # Basic health check endpoint.
-    # TODO: implement dependency checks (e.g., DB, external services).
-    return {"status": "ok"}
+    status_code = 200
+    checks = {
+        "mongodb": {"status": "ok"},
+        "external_api": {"status": "ok"},
+    }
+
+    try:
+        db = await get_db()
+        await db.command("ping")
+    except Exception as exc:
+        checks["mongodb"] = {"status": "down", "detail": str(exc)}
+        status_code = 503
+
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            response = await client.get("http://mock-external-api:9000/health")
+            if response.status_code != 200:
+                checks["external_api"] = {
+                    "status": "down",
+                    "detail": f"status_code={response.status_code}",
+                }
+                status_code = 503
+    except Exception as exc:
+        checks["external_api"] = {"status": "down", "detail": str(exc)}
+        status_code = 503
+
+    overall = "ok" if status_code == 200 else "degraded"
+    return JSONResponse(
+        status_code=status_code,
+        content={"status": overall, "dependencies": checks},
+    )
 
 
 # ============================================================
@@ -113,7 +141,6 @@ async def get_tenant_stats(
 @router.post("/ingest/run")
 async def run_ingestion(
     tenant_id: str,
-    background_tasks: BackgroundTasks,
     ingest_service: IngestService = Depends(),
 ):
     """
@@ -157,7 +184,7 @@ async def run_ingestion(
                 released,
             )
 
-    background_tasks.add_task(_run_and_release)
+    asyncio.create_task(_run_and_release())
 
     return {
         "status": "ingestion_started",

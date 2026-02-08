@@ -11,6 +11,7 @@ Requirements:
 
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any
+from pymongo.errors import DuplicateKeyError
 from src.db.mongo import get_db
 
 
@@ -63,6 +64,8 @@ class SyncService:
             return datetime.now(timezone.utc)
 
         external_id = external_ticket.get("id") or external_ticket.get("external_id")
+        if not external_id:
+            return {"action": "unchanged", "ticket_id": "", "changes": []}
         updated_at = _parse_datetime(external_ticket.get("updated_at"))
         created_at = _parse_datetime(external_ticket.get("created_at"))
 
@@ -80,20 +83,31 @@ class SyncService:
                 "created_at": created_at or _now_utc(),
                 "updated_at": updated_at or created_at or _now_utc(),
             }
-            await db.tickets.insert_one(doc)
-            await self.record_history(external_id, tenant_id, "created")
-            return {"action": "created", "ticket_id": external_id, "changes": []}
+            try:
+                await db.tickets.insert_one(doc)
+            except DuplicateKeyError:
+                existing = await db.tickets.find_one(
+                    {"tenant_id": tenant_id, "external_id": external_id}
+                )
+                if not existing:
+                    raise
+            else:
+                await self.record_history(external_id, tenant_id, "created")
+                return {"action": "created", "ticket_id": external_id, "changes": []}
 
         existing_updated_at = _parse_datetime(existing.get("updated_at"))
         if updated_at and existing_updated_at:
-            if updated_at.timestamp() <= existing_updated_at.timestamp():
+            if int(updated_at.timestamp()) <= int(existing_updated_at.timestamp()):
                 return {"action": "unchanged", "ticket_id": external_id, "changes": []}
+        if updated_at is None and existing_updated_at is not None:
+            return {"action": "unchanged", "ticket_id": external_id, "changes": []}
 
+        new_updated_at = updated_at or existing_updated_at or _now_utc()
         update_doc = {
             "subject": external_ticket.get("subject", existing.get("subject")),
             "message": external_ticket.get("message", existing.get("message")),
             "status": external_ticket.get("status", existing.get("status")),
-            "updated_at": updated_at or _now_utc(),
+            "updated_at": new_updated_at,
         }
 
         existing_for_compare = dict(existing)
@@ -101,7 +115,9 @@ class SyncService:
         update_doc["updated_at"] = _parse_datetime(update_doc["updated_at"])
 
         changes = self.compute_changes(
-            existing_for_compare, update_doc, list(update_doc.keys())
+            existing_for_compare,
+            update_doc,
+            ["subject", "message", "status"],
         )
         if not changes:
             return {"action": "unchanged", "ticket_id": external_id, "changes": []}

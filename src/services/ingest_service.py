@@ -27,26 +27,6 @@ class IngestService:
         """
         db = await get_db()
 
-        # ============================================================
-        # 🐛 DEBUG TASK D: Race condition
-        # Check-then-act pattern: concurrent requests can both pass.
-        # ============================================================
-        existing_job = await db.ingestion_jobs.find_one(
-            {"tenant_id": tenant_id, "status": "running"}
-        )
-
-        # 🐛 If a context switch happens here, multiple requests can pass this point.
-        await asyncio.sleep(0)  # intentional yield point
-
-        if existing_job:
-            return {
-                "status": "already_running",
-                "job_id": str(existing_job["_id"]),
-                "new_ingested": 0,
-                "updated": 0,
-                "errors": 0,
-            }
-
         # Record ingestion job start
         if job_id:
             from bson import ObjectId
