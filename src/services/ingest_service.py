@@ -5,6 +5,7 @@ import asyncio
 from src.db.mongo import get_db
 from src.services.classify_service import ClassifyService
 from src.services.notify_service import NotifyService
+from src.services.rate_limiter import get_rate_limiter
 from src.core.logging import logger
 
 
@@ -108,6 +109,7 @@ class IngestService:
             max_tickets = 100
             processed_tickets = 0
             cancelled = False
+            limiter = get_rate_limiter()
 
             async with httpx.AsyncClient(timeout=10.0) as client:
                 while True:
@@ -126,6 +128,7 @@ class IngestService:
                     params = {"page": page, "page_size": page_size}
 
                     while True:
+                        await limiter.wait_and_acquire()
                         response = await client.get(
                             self.external_api_url, params=params
                         )

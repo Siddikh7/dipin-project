@@ -47,7 +47,9 @@ class RateLimiter:
         """
         async with self._lock:
             now = time.time()
-            while self.request_times and now - self.request_times[0] > self.window_seconds:
+            while (
+                self.request_times and now - self.request_times[0] > self.window_seconds
+            ):
                 self.request_times.popleft()
 
             if len(self.request_times) < self.requests_per_minute:
@@ -95,7 +97,7 @@ class RateLimiter:
             "limit": self.requests_per_minute,
             "window_seconds": self.window_seconds,
             "current_requests": current,
-            "remaining": max(0, self.requests_per_minute - current)
+            "remaining": max(0, self.requests_per_minute - current),
         }
 
 
