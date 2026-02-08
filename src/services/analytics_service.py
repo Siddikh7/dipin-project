@@ -16,7 +16,7 @@ class AnalyticsService:
         """
         db = await get_db()
 
-        match: dict = {"tenant_id": tenant_id}
+        match: dict = {"tenant_id": tenant_id, "deleted_at": {"$exists": False}}
         if from_date and to_date:
             match["created_at"] = {"$gte": from_date, "$lte": to_date}
         elif from_date:
@@ -29,6 +29,17 @@ class AnalyticsService:
 
         pipeline = [
             {"$match": match},
+            {
+                "$project": {
+                    "status": 1,
+                    "urgency": 1,
+                    "sentiment": 1,
+                    "created_at": 1,
+                    "subject": 1,
+                    "message": 1,
+                    "customer_id": 1,
+                }
+            },
             {
                 "$facet": {
                     "totals": [
@@ -57,7 +68,9 @@ class AnalyticsService:
                             }
                         }
                     ],
-                    "by_status": [{"$group": {"_id": "$status", "count": {"$sum": 1}}}],
+                    "by_status": [
+                        {"$group": {"_id": "$status", "count": {"$sum": 1}}}
+                    ],
                     "hourly_trend": [
                         {"$match": {"created_at": {"$gte": last_24h}}},
                         {
@@ -116,9 +129,87 @@ class AnalyticsService:
                     ],
                 }
             },
+            {
+                "$addFields": {
+                    "totals_doc": {
+                        "$ifNull": [
+                            {"$arrayElemAt": ["$totals", 0]},
+                            {"total": 0, "high_count": 0, "negative_count": 0},
+                        ]
+                    }
+                }
+            },
+            {
+                "$project": {
+                    "total_tickets": "$totals_doc.total",
+                    "by_status": {
+                        "$cond": [
+                            {"$gt": [{"$size": "$by_status"}, 0]},
+                            {
+                                "$arrayToObject": {
+                                    "$map": {
+                                        "input": "$by_status",
+                                        "as": "item",
+                                        "in": ["$$item._id", "$$item.count"],
+                                    }
+                                }
+                            },
+                            {},
+                        ]
+                    },
+                    "urgency_high_ratio": {
+                        "$cond": [
+                            {"$gt": ["$totals_doc.total", 0]},
+                            {
+                                "$divide": [
+                                    "$totals_doc.high_count",
+                                    "$totals_doc.total",
+                                ]
+                            },
+                            0.0,
+                        ]
+                    },
+                    "negative_sentiment_ratio": {
+                        "$cond": [
+                            {"$gt": ["$totals_doc.total", 0]},
+                            {
+                                "$divide": [
+                                    "$totals_doc.negative_count",
+                                    "$totals_doc.total",
+                                ]
+                            },
+                            0.0,
+                        ]
+                    },
+                    "hourly_trend": {
+                        "$map": {
+                            "input": "$hourly_trend",
+                            "as": "item",
+                            "in": {"hour": "$$item._id", "count": "$$item.count"},
+                        }
+                    },
+                    "top_keywords": {
+                        "$map": {
+                            "input": "$top_keywords",
+                            "as": "item",
+                            "in": "$$item._id",
+                        }
+                    },
+                    "at_risk_customers": {
+                        "$map": {
+                            "input": "$at_risk_customers",
+                            "as": "item",
+                            "in": {
+                                "customer_id": "$$item._id",
+                                "count": "$$item.count",
+                            },
+                        }
+                    },
+                }
+            },
         ]
 
-        agg = await db.tickets.aggregate(pipeline).to_list(length=1)
+        agg = await db.tickets.aggregate(pipeline, allowDiskUse=True).to_list(length=1)
         if not agg:
             return {
                 "total_tickets": 0,
@@ -130,29 +221,4 @@ class AnalyticsService:
                 "at_risk_customers": [],
             }
 
-        data = agg[0]
-        totals = data.get("totals", [])
-        total = totals[0].get("total", 0) if totals else 0
-        high_count = totals[0].get("high_count", 0) if totals else 0
-        negative_count = totals[0].get("negative_count", 0) if totals else 0
-
-        by_status = {item["_id"]: item["count"] for item in data.get("by_status", [])}
-        hourly_trend = [
-            {"hour": item["_id"], "count": item["count"]}
-            for item in data.get("hourly_trend", [])
-        ]
-        top_keywords = [item["_id"] for item in data.get("top_keywords", [])]
-        at_risk_customers = [
-            {"customer_id": item["_id"], "count": item["count"]}
-            for item in data.get("at_risk_customers", [])
-        ]
-
-        return {
-            "total_tickets": total,
-            "by_status": by_status,
-            "urgency_high_ratio": (high_count / total) if total else 0.0,
-            "negative_sentiment_ratio": (negative_count / total) if total else 0.0,
-            "hourly_trend": hourly_trend,
-            "top_keywords": top_keywords,
-            "at_risk_customers": at_risk_customers,
-        }
+        return agg[0]
