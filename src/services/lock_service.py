@@ -13,6 +13,8 @@ Requirements:
 
 from datetime import datetime, timedelta
 from typing import Optional
+from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 from src.db.mongo import get_db
 
 
@@ -45,8 +47,33 @@ class LockService:
         - If no lock or an expired lock exists, create/refresh a lock and return True.
         - Use an atomic MongoDB operation.
         """
-        # TODO: implement
-        pass
+        db = await get_db()
+        now = datetime.utcnow()
+        expires_at = now + timedelta(seconds=self.LOCK_TTL_SECONDS)
+
+        try:
+            result = await db[self.LOCK_COLLECTION].find_one_and_update(
+                {
+                    "resource_id": resource_id,
+                    "$or": [
+                        {"expires_at": {"$lte": now}},
+                        {"expires_at": {"$exists": False}},
+                    ],
+                },
+                {
+                    "$set": {
+                        "owner_id": owner_id,
+                        "acquired_at": now,
+                        "expires_at": expires_at,
+                    }
+                },
+                upsert=True,
+                return_document=ReturnDocument.AFTER,
+            )
+        except DuplicateKeyError:
+            return False
+
+        return result is not None
 
     async def release_lock(self, resource_id: str, owner_id: str) -> bool:
         """
@@ -62,8 +89,11 @@ class LockService:
         TODO: Implement:
         - Only release the lock when `owner_id` matches the stored owner.
         """
-        # TODO: implement
-        pass
+        db = await get_db()
+        result = await db[self.LOCK_COLLECTION].delete_one(
+            {"resource_id": resource_id, "owner_id": owner_id}
+        )
+        return result.deleted_count > 0
 
     async def refresh_lock(self, resource_id: str, owner_id: str) -> bool:
         """
@@ -79,8 +109,14 @@ class LockService:
         TODO: Implement:
         - For long-running jobs, call this periodically to keep the lock alive.
         """
-        # TODO: implement
-        pass
+        db = await get_db()
+        now = datetime.utcnow()
+        expires_at = now + timedelta(seconds=self.LOCK_TTL_SECONDS)
+        result = await db[self.LOCK_COLLECTION].update_one(
+            {"resource_id": resource_id, "owner_id": owner_id},
+            {"$set": {"expires_at": expires_at}},
+        )
+        return result.modified_count > 0
 
     async def get_lock_status(self, resource_id: str) -> Optional[dict]:
         """
@@ -110,7 +146,7 @@ class LockService:
             "owner_id": lock["owner_id"],
             "acquired_at": lock.get("acquired_at"),
             "expires_at": expires_at,
-            "is_expired": now > expires_at
+            "is_expired": now > expires_at,
         }
 
     async def cleanup_expired_locks(self) -> int:
@@ -121,7 +157,7 @@ class LockService:
             Number of deleted locks.
         """
         db = await get_db()
-        result = await db[self.LOCK_COLLECTION].delete_many({
-            "expires_at": {"$lt": datetime.utcnow()}
-        })
+        result = await db[self.LOCK_COLLECTION].delete_many(
+            {"expires_at": {"$lt": datetime.utcnow()}}
+        )
         return result.deleted_count

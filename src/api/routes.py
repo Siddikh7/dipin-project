@@ -7,6 +7,7 @@ from src.services.ingest_service import IngestService
 from src.services.analytics_service import AnalyticsService
 from src.services.lock_service import LockService
 from src.services.circuit_breaker import get_circuit_breaker
+from src.core.logging import logger
 
 router = APIRouter()
 
@@ -127,13 +128,43 @@ async def run_ingestion(
     # if not await lock_service.acquire_lock(f"ingest:{tenant_id}", job_id):
     #     raise HTTPException(status_code=409, detail="Ingestion already running")
 
-    result = await ingest_service.run_ingestion(tenant_id)
+    lock_service = LockService()
+    acquired = await lock_service.acquire_lock(f"ingest:{tenant_id}", tenant_id)
+    if not acquired:
+        raise HTTPException(status_code=409, detail="Ingestion already running")
+    logger.info("Ingestion lock acquired tenant=%s", tenant_id)
+
+    db = await get_db()
+    job_doc = {
+        "tenant_id": tenant_id,
+        "status": "running",
+        "started_at": datetime.utcnow(),
+        "progress": 0,
+        "total_pages": None,
+        "processed_pages": 0,
+    }
+    job_result = await db.ingestion_jobs.insert_one(job_doc)
+    job_id = str(job_result.inserted_id)
+
+    async def _run_and_release() -> None:
+        try:
+            await ingest_service.run_ingestion(tenant_id, job_id=job_id)
+        finally:
+            released = await lock_service.release_lock(f"ingest:{tenant_id}", tenant_id)
+            logger.info(
+                "Ingestion lock released tenant=%s released=%s",
+                tenant_id,
+                released,
+            )
+
+    background_tasks.add_task(_run_and_release)
+
     return {
         "status": "ingestion_started",
-        "job_id": result.get("job_id"),
-        "new_tickets": result.get("new_ingested", 0),
-        "updated": result.get("updated", 0),
-        "errors": result.get("errors", 0),
+        "job_id": job_id,
+        "new_tickets": 0,
+        "updated": 0,
+        "errors": 0,
     }
 
 

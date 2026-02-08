@@ -53,6 +53,17 @@ async def create_indexes():
     await ingestion_logs.create_index([("tenant_id", pymongo.ASCENDING)])
     await ingestion_logs.create_index([("job_id", pymongo.ASCENDING)])
 
+    # distributed_locks 컬렉션 인덱스
+    distributed_locks = db.distributed_locks
+    await distributed_locks.create_index(
+        [("resource_id", pymongo.ASCENDING)],
+        unique=True,
+    )
+    await distributed_locks.create_index(
+        [("expires_at", pymongo.ASCENDING)],
+        expireAfterSeconds=0,
+    )
+
 
 # ============================================================
 # Hint: Example of good index design

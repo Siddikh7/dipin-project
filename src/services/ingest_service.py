@@ -14,7 +14,7 @@ class IngestService:
         self.classify_service = ClassifyService()
         self.notify_service = NotifyService()
 
-    async def run_ingestion(self, tenant_id: str) -> dict:
+    async def run_ingestion(self, tenant_id: str, job_id: Optional[str] = None) -> dict:
         """
         Fetch tickets from the external API and persist them for a tenant.
         The implementation should take into account pagination, duplicate
@@ -44,16 +44,36 @@ class IngestService:
             }
 
         # Record ingestion job start
-        job_doc = {
-            "tenant_id": tenant_id,
-            "status": "running",
-            "started_at": datetime.utcnow(),
-            "progress": 0,
-            "total_pages": None,
-            "processed_pages": 0,
-        }
-        result = await db.ingestion_jobs.insert_one(job_doc)
-        job_id = str(result.inserted_id)
+        if job_id:
+            from bson import ObjectId
+
+            job_oid = ObjectId(job_id)
+            job_doc = await db.ingestion_jobs.find_one({"_id": job_oid})
+            if not job_doc:
+                job_doc = {
+                    "_id": job_oid,
+                    "tenant_id": tenant_id,
+                    "status": "running",
+                    "started_at": datetime.utcnow(),
+                    "progress": 0,
+                    "total_pages": None,
+                    "processed_pages": 0,
+                }
+                await db.ingestion_jobs.insert_one(job_doc)
+        else:
+            job_doc = {
+                "tenant_id": tenant_id,
+                "status": "running",
+                "started_at": datetime.utcnow(),
+                "progress": 0,
+                "total_pages": None,
+                "processed_pages": 0,
+            }
+            result = await db.ingestion_jobs.insert_one(job_doc)
+            job_id = str(result.inserted_id)
+            from bson import ObjectId
+
+            job_oid = ObjectId(job_id)
 
         logger.info("Ingestion started tenant=%s job_id=%s", tenant_id, job_id)
 
@@ -92,7 +112,7 @@ class IngestService:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 while True:
                     job_state = await db.ingestion_jobs.find_one(
-                        {"_id": result.inserted_id}, {"status": 1}
+                        {"_id": job_oid}, {"status": 1}
                     )
                     if job_state and job_state.get("status") == "cancelled":
                         cancelled = True
@@ -130,7 +150,7 @@ class IngestService:
                     if total_count is not None:
                         total_pages = max(1, (total_count + page_size - 1) // page_size)
                         await db.ingestion_jobs.update_one(
-                            {"_id": result.inserted_id},
+                            {"_id": job_oid},
                             {"$set": {"total_pages": total_pages}},
                         )
 
@@ -201,7 +221,7 @@ class IngestService:
                         progress = int((processed_pages / total_pages) * 100)
 
                     await db.ingestion_jobs.update_one(
-                        {"_id": result.inserted_id},
+                        {"_id": job_oid},
                         {
                             "$set": {
                                 "processed_pages": processed_pages,
@@ -257,7 +277,7 @@ class IngestService:
 
         # Log successful completion
         await db.ingestion_jobs.update_one(
-            {"_id": result.inserted_id},
+            {"_id": job_oid},
             {"$set": {"status": "completed", "ended_at": datetime.utcnow()}},
         )
         await db.ingestion_logs.insert_one(
